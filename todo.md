@@ -1,6 +1,6 @@
 <!-- Heading -->
 # TODO API
-## This API contain 6 EndPoints
+## This API contain 6 EndPoints and it uses PgSql as database
 
 <!-- Italic -->
 >* _CREATE todo - We need to pass the description and the deadline for the todo we want to add. we have to pass the details in body_
