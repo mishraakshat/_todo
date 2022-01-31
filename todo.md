@@ -1,6 +1,6 @@
 <!-- Heading -->
 # TODO API
-## This API contain 6 EndPoints and it uses PgSql as database
+## This API contain 8 EndPoints and it uses PgSql as database. all possible bad combination of datainput has been taken care in all the requests
 
 <!-- Italic -->
 >* _CREATE todo - We need to pass the description and the deadline for the todo we want to add. we have to pass the details in body_
@@ -13,4 +13,8 @@
 
 >* _UPDATE todo - here we need to pass id as params and the new description in the body to update the todo. it will return the updated todo_
 
+>* _UPDATE (mark a particular Group completed) - will mark all the todos in a particular group as completed_
+
 >* _DELETE todo - Here we need to pass the id in params to delete a particular todo_
+
+>* _DELETE todo byGroup - Here we need to pass the group name which we want to remove from our database_
