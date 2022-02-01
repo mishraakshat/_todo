@@ -9,8 +9,8 @@ router.post('/todos', async (req, res) => {
     try{
         const keys = trimLowerElement(Object.keys(req.body)).join(',')
         const values = trimLowerElement(Object.values(req.body)).map(x => (typeof x == 'string') ? `'${x}'` : x).join(',')
-        // console.log(keys)
-        // console.log(values)
+        console.log(keys)
+        console.log(values)
         const newTodo = await pool.query(
             `INSERT INTO todo (${keys}) VALUES (${values}) RETURNING *`,
         )
@@ -18,7 +18,7 @@ router.post('/todos', async (req, res) => {
         res.send(newTodo.rows)
     } catch(e)
     {
-        // console.log(e)
+        console.log(e)
         res.status(400).send(e)
     }
 })
