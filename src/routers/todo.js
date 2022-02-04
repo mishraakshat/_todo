@@ -1,6 +1,10 @@
 const express = require('express')
 const pool = require('../db/db')
 const trimLowerElement = require('../utils/utils')
+const redis_client = require('../db/redis-cli')
+const { status } = require('express/lib/response')
+const EXPIRATION_TIME = 60
+
 
 const router = new express.Router()
 
@@ -9,13 +13,25 @@ router.post('/todos', async (req, res) => {
     try{
         const keys = trimLowerElement(Object.keys(req.body)).join(',')
         const values = trimLowerElement(Object.values(req.body)).map(x => (typeof x == 'string') ? `'${x}'` : x).join(',')
-        console.log(keys)
-        console.log(values)
+        // console.log(keys)
+        // console.log(values)
         const newTodo = await pool.query(
             `INSERT INTO todo (${keys}) VALUES (${values}) RETURNING *`,
         )
-        // console.log(newTodo)
-        res.send(newTodo.rows)
+        // console.log(newTodo.rows[0])
+        
+        await redis_client.connect()
+        const data = JSON.stringify(newTodo.rows[0])
+        const status_id = await redis_client.set(`id:${newTodo.rows[0].todo_id}`, data)
+        // const set_with_deadline = await redis_client.sAdd(`deadline:${newTodo.rows[0].deadline}`, data)
+        const set_with_group = await redis_client.sAdd(`group:${newTodo.rows[0]._group}`, data)
+        // const get_with_date = await redis_client.sMembers(`deadline:${newTodo.rows[0].deadline}`)
+        // const del_with_date = await redis_client.sRem(`deadline:${newTodo.rows[0].deadline}`,data)
+        await redis_client.disconnect()
+        // console.log(status_id, status_deadline)
+        // console.log(get_with_date)
+        res.send(newTodo.rows[0])
+        
     } catch(e)
     {
         console.log(e)
@@ -28,14 +44,13 @@ router.get('/todos' , async (req, res) => {
     // console.log(req.params.x, req.params.y)
     try{
         const {offset, limit} = req.query
-        // console.log(req)
-        // console.log(offset,limit)
+        
         let OFFSET = ''
         let LIMIT  = ''
         if(offset) OFFSET = `OFFSET ${offset}`
         if(limit)  LIMIT  = `LIMIT ${limit}`
 
-        // console.log(OFFSET,LIMIT)
+        console.log(OFFSET,LIMIT)
         const allTodos = await pool.query(
             `SELECT * FROM todo ${LIMIT} ${OFFSET}`
             )
@@ -52,12 +67,12 @@ router.get('/todos' , async (req, res) => {
 router.get('/todos/:id' , async (req, res) => {
     try{
         const id = req.params.id.trim()
-        const allTodos = await pool.query(
-            'SELECT * FROM todo WHERE todo_id = ($1)',
-            [id] 
-        )
-
-        res.status(200).send(allTodos.rows)
+        await redis_client.connect()
+        const details = await redis_client.get(`id:${id}`)
+        await redis_client.disconnect()
+        // console.log(details," data")
+        res.status(201).send(JSON.parse(details))
+       
     }
     catch(e)
     {
@@ -69,7 +84,8 @@ router.get('/todos/:id' , async (req, res) => {
 router.get('/todosByDate' ,async (req, res) => {
     try{
         const date = req.body.deadline.trim()
-        // console.log(date)
+        
+        // not using redis here working on adding it
         const allTodos = await pool.query(
             'SELECT * FROM todo WHERE deadline = $1',
             [date]
@@ -86,17 +102,17 @@ router.get('/todosByDate' ,async (req, res) => {
 // get todo with with groupName
 router.get('/todosByGroup' ,async (req, res) => {
     try{
-        const group = req.body.group
-        // console.log(date)
-        const allTodos = await pool.query(
-            'SELECT * FROM todo WHERE _group = TRIM($1)',
-            [group]
-            )
-
-            res.status(200).send(allTodos.rows)
+        const group = req.body.group.trim().toLowerCase()
+        await redis_client.connect()
+        let allData = await redis_client.sMembers(`group:${group}`)
+        await redis_client.disconnect()
+        // console.log(JSON.parse(allData))
+        allData = allData.map(x => JSON.parse(x))
+        // console.log(allData)
+        res.status(201).send(allData)
+        
     } catch(e)
     {
-        // console.log(date)
         res.status(404).send(e)
     }
 })
@@ -113,8 +129,6 @@ router.put('/todos/:id', async (req, res) => {
         // console.log(QUERY)
         // console.log(id, newdescription)
         const getChanges = await pool.query(
-            // 'UPDATE todo SET description = ($1) WHERE todo_id = ($2) RETURNING *',
-            // [newdescription,id]
             `UPDATE todo SET ${QUERY} WHERE  todo_id = ${id} RETURNING *`
         )
         res.status(201).send(getChanges.rows)
@@ -127,13 +141,7 @@ router.put('/todos/:id', async (req, res) => {
 // make completed by group name
 router.put('/makeCompleted', async (req, res) => {
     try{
-        // const id = req.params.id
-        // const keys = trimLowerElement(Object.keys(req.body)) 
-        // const values = trimLowerElement(Object.values(req.body)).map(x => (typeof x == 'string') ? `'${x}'` : x) 
-        // const QUERY = [keys, values].reduce((a, b) => a.map((v, i) => v + ' ='  + b[i])).join(',');
-        // console.log(QUERY)
-
-
+        
         const group = req.body._group.trim().toLowerCase()
         const value = req.body.completed.trim().toLowerCase()
         // console.log(group, value)
@@ -154,12 +162,27 @@ router.put('/makeCompleted', async (req, res) => {
 // delete
 router.delete('/todos/:id', async (req, res) => {
     try{
-        const id = req.params.id
+        const id = req.params.id.trim()
+        
         const deletedTodo = await pool.query(
             'DELETE FROM todo WHERE todo_id = ($1) RETURNING *',
             [id]
         )
-        res.status(200).send(deletedTodo.rows)
+        // console.log(1)
+        if(!deletedTodo.rows[0]) return res.status(201).send('Already Deleted')
+        // console.log(deletedTodo.rows[0])
+
+        await redis_client.connect()
+        const exits = await redis_client.exists(`id:${id}`)
+        if(exits == 1) await redis_client.del(`id:${id}`)
+        await redis_client.sRem(`group:${deletedTodo.rows[0]._group}`, JSON.stringify(deletedTodo.rows[0]))
+        // delete from group set
+
+        // console.log(exits)
+        await redis_client.disconnect()
+        // console.log(2)
+        // console.log(deletedTodo.rows[0])
+        res.status(200).send(deletedTodo.rows[0])
     }
     catch(e)
     {
@@ -170,11 +193,23 @@ router.delete('/todos/:id', async (req, res) => {
 router.delete('/deleteByGroup', async (req, res) => {
     try{
         // const id = req.params.id
-        const group = req.body._group.trim()
+        const group = req.body._group.trim().toLowerCase()
         const deletedTodo = await pool.query(
             'DELETE FROM todo WHERE _group = ($1) RETURNING *',
             [group]
         )
+        if(deletedTodo.rows.length == 0) return res.status(200).send('already deleted')
+        await redis_client.connect()
+        // console.log('CONNECTED :)')
+        let delStatus1 = await redis_client.del(`group:${group}`)
+
+        for(const todo of deletedTodo.rows)
+        {
+            const stat = await redis_client.del(`id:${todo.todo_id}`)
+        }
+
+        await redis_client.disconnect()
+        // console.log('DISCONNECTED')
         res.status(200).send(deletedTodo.rows)
     }
     catch(e)

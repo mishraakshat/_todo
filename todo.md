@@ -1,6 +1,6 @@
 <!-- Heading -->
 # TODO API
-## This API contain 8 EndPoints and it uses PgSql as database. all possible bad combination of datainput has been taken care in all the requests
+## This API contain 8 EndPoints and it uses PgSql as database. all possible bad combination of datainput has been taken care in all the requests added redis on 5 endpoints
 
 <!-- Italic -->
 >* _CREATE todo - We need to pass the description and the deadline for the todo we want to add. we have to pass the details in body_
