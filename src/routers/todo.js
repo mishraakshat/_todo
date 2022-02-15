@@ -1,18 +1,21 @@
 const express = require('express')
 const pool = require('../db/db')
 const trimLowerElement = require('../utils/utils')
-const redis_client = require('../db/redis-cli')
+const redis_client = require('../db/redisConnect')
 const { status } = require('express/lib/response')
+const auth = require('../middleware/auth')
 const EXPIRATION_TIME = 60
-
+// redis_client.connect()
 
 const router = new express.Router()
 
 // create todo
-router.post('/todos', async (req, res) => {
+router.post('/todos', auth, async (req, res) => {
     try{
+        // const user_id = req.user_id
         const keys = trimLowerElement(Object.keys(req.body)).join(',')
         const values = trimLowerElement(Object.values(req.body)).map(x => (typeof x == 'string') ? `'${x}'` : x).join(',')
+        // console.log(req.body)
         // console.log(keys)
         // console.log(values)
         const newTodo = await pool.query(
@@ -20,17 +23,14 @@ router.post('/todos', async (req, res) => {
         )
         // console.log(newTodo.rows[0])
         
-        await redis_client.connect()
+        // await redis_client.connect()
         const data = JSON.stringify(newTodo.rows[0])
         const status_id = await redis_client.set(`id:${newTodo.rows[0].todo_id}`, data)
         // const set_with_deadline = await redis_client.sAdd(`deadline:${newTodo.rows[0].deadline}`, data)
-        const set_with_group = await redis_client.sAdd(`group:${newTodo.rows[0]._group}`, data)
-        // const get_with_date = await redis_client.sMembers(`deadline:${newTodo.rows[0].deadline}`)
-        // const del_with_date = await redis_client.sRem(`deadline:${newTodo.rows[0].deadline}`,data)
-        await redis_client.disconnect()
-        // console.log(status_id, status_deadline)
-        // console.log(get_with_date)
-        res.send(newTodo.rows[0])
+        const set_with_group = await redis_client.sAdd(`u_id:${req.body.user_id}|group:${newTodo.rows[0]._group}`, data)
+        await redis_client.sAdd(`u_id:${req.body.user_id}`, data)
+       
+        res.status(201).send(newTodo.rows[0])
         
     } catch(e)
     {
@@ -40,7 +40,7 @@ router.post('/todos', async (req, res) => {
 })
 
 // get all todos
-router.get('/todos' , async (req, res) => {
+router.get('/todos' , auth, async (req, res) => {
     // console.log(req.params.x, req.params.y)
     try{
         const {offset, limit} = req.query
@@ -50,33 +50,42 @@ router.get('/todos' , async (req, res) => {
         if(offset) OFFSET = `OFFSET ${offset}`
         if(limit)  LIMIT  = `LIMIT ${limit}`
 
-        console.log(OFFSET,LIMIT)
-        const allTodos = await pool.query(
-            `SELECT * FROM todo ${LIMIT} ${OFFSET}`
-            )
-        res.status(200).send(allTodos.rows)
+        // console.log(OFFSET,LIMIT)
+        // const allTodos = await pool.query(
+        //     `SELECT * FROM todo ${LIMIT} ${OFFSET}`
+        //     )
+        let allTodos = await redis_client.sMembers(`u_id:${req.body.user_id}`)
+        allTodos = allTodos.map(x => JSON.parse(x))
+
+        res.status(200).send(allTodos)
     }
     catch(e)
     {
         // console.log(e)
-        res.status(404).send(e)
+        res.status(404).send({error : 'Not Found'})
     }
 })
 
 // get with id
-router.get('/todos/:id' , async (req, res) => {
+router.get('/todos/:id' ,auth, async (req, res) => {
     try{
         const id = req.params.id.trim()
-        await redis_client.connect()
+        // await redis_client.connect()
+        // console.log(id)
         const details = await redis_client.get(`id:${id}`)
-        await redis_client.disconnect()
+        // console.log()
+        // await redis_client.disconnect()
         // console.log(details," data")
-        res.status(201).send(JSON.parse(details))
+        const data = JSON.parse(details)
+        if(data.user_id != req.body.user_id) throw new error('User trying to get data of another user')
+
+        res.status(200).send(data)
        
     }
     catch(e)
     {
-        res.status(404).send(e)
+        // console.log(e)
+        res.status(404).send({error : 'Not Found'})
     }
 })
 
@@ -100,12 +109,12 @@ router.get('/todosByDate' ,async (req, res) => {
 })
 
 // get todo with with groupName
-router.get('/todosByGroup' ,async (req, res) => {
+router.get('/todosByGroup', auth, async (req, res) => {
     try{
         const group = req.body.group.trim().toLowerCase()
-        await redis_client.connect()
-        let allData = await redis_client.sMembers(`group:${group}`)
-        await redis_client.disconnect()
+        // await redis_client.connect()
+        let allData = await redis_client.sMembers(`u_id:${req.body.user_id}|group:${group}`)
+        // await redis_client.disconnect()
         // console.log(JSON.parse(allData))
         allData = allData.map(x => JSON.parse(x))
         // console.log(allData)
@@ -119,7 +128,7 @@ router.get('/todosByGroup' ,async (req, res) => {
 
 
 // update with id
-router.put('/todos/:id', async (req, res) => {
+router.put('/todos/:id', auth, async (req, res) => {
     try{
         const id = req.params.id.trim()
         // const newdescription = req.body.description.trim().toLowerCase()
@@ -128,93 +137,126 @@ router.put('/todos/:id', async (req, res) => {
         const QUERY = [keys, values].reduce((a, b) => a.map((v, i) => v + ' ='  + b[i])).join(', ');
         // console.log(QUERY)
         // console.log(id, newdescription)
+        // delete from redis group set
+        // console.log(QUERY, id, req.body.user_id)
+
+        const getInitial = await (await pool.query(`SELECT * from todo WHERE todo_id = ${id} AND user_id = ${req.body.user_id}`)).rows[0]
+        // console.log(getInitial)
+
+        if(!getInitial) throw new Error('Not Found')
+
+        await redis_client.sRem(`u_id:${req.body.user_id}|group:${getInitial._group}`, JSON.stringify(getInitial))
+        await redis_client.sRem(`u_id:${req.body.user_id}`, JSON.stringify(getInitial))
+
+
         const getChanges = await pool.query(
-            `UPDATE todo SET ${QUERY} WHERE  todo_id = ${id} RETURNING *`
+            `UPDATE todo SET ${QUERY} WHERE  todo_id = ${id} AND user_id = ${req.body.user_id} RETURNING *`
         )
-        res.status(201).send(getChanges.rows)
+        
+        const data = JSON.stringify(getChanges.rows[0]) 
+        await redis_client.sAdd(`u_id:${req.body.user_id}|group:${getChanges.rows[0]._group}`, data)
+        await redis_client.sAdd(`u_id:${req.body.user_id}`, data)
+        await redis_client.set(`id:${getChanges.rows[0].todo_id}`, data)
+
+        res.status(201).send(getChanges.rows[0])
+
     } catch(e)
     {
-        res.status(404).send(e)
+        res.status(404).send({error : 'Not Found'})
     }
 })
 
 // make completed by group name
-router.put('/makeCompleted', async (req, res) => {
+router.put('/makeCompleted', auth, async (req, res) => {
     try{
-        
+        // here i can optimise because we are not changing group
         const group = req.body._group.trim().toLowerCase()
         const value = req.body.completed.trim().toLowerCase()
+        const user_id = req.body.user_id
         // console.log(group, value)
         const getChanges = await pool.query(
-            'UPDATE todo SET completed = CAST(($1) AS BOOLEAN) WHERE  _group = ($2) RETURNING *',
-            [value, group]
-            // `UPDATE todo SET ${QUERY} WHERE  _group = ($2) RETURNING *`
+            'UPDATE todo SET completed = CAST(($1) AS BOOLEAN) WHERE  _group = ($2) AND user_id = ($3) RETURNING *',
+            [value, group, user_id]
         )
+
+        await redis_client.del(`u_id:${user_id}|group:${group}`)
+        for(const todo of getChanges.rows)
+        {
+            todo.completed = false
+            await redis_client.sRem(`u_id:${req.body.user_id}`, JSON.stringify(todo))
+            todo.completed = true
+               
+            const data = JSON.stringify(todo)
+            await redis_client.sAdd(`u_id:${req.body.user_id}`, data)
+            await redis_client.set(`id:${todo.todo_id}`, data)
+            await redis_client.sAdd(`u_id:${user_id}|group:${group}`, data)
+
+        }
+
         res.status(201).send(getChanges.rows)
     } catch(e)
     {
         // console.log(e)
-        res.status(404).send(e)
+        res.status(404).send({error: 'Not Found'})
     }
 })
 
 
 // delete
-router.delete('/todos/:id', async (req, res) => {
+router.delete('/todos/:id', auth, async (req, res) => {
     try{
         const id = req.params.id.trim()
         
         const deletedTodo = await pool.query(
-            'DELETE FROM todo WHERE todo_id = ($1) RETURNING *',
-            [id]
+            `DELETE FROM todo WHERE todo_id = ${id} AND user_id = ${req.body.user_id} RETURNING *`
         )
         // console.log(1)
-        if(!deletedTodo.rows[0]) return res.status(201).send('Already Deleted')
+        if(!deletedTodo.rows[0]) throw new Error('Not Found')
         // console.log(deletedTodo.rows[0])
 
-        await redis_client.connect()
+        // await redis_client.connect()
+        await redis_client.sRem(`u_id:${req.body.user_id}`, JSON.stringify(deletedTodo.rows[0]))
         const exits = await redis_client.exists(`id:${id}`)
         if(exits == 1) await redis_client.del(`id:${id}`)
-        await redis_client.sRem(`group:${deletedTodo.rows[0]._group}`, JSON.stringify(deletedTodo.rows[0]))
+        await redis_client.sRem(`u_id:${req.body.user_id}|group:${deletedTodo.rows[0]._group}`, JSON.stringify(deletedTodo.rows[0]))
         // delete from group set
 
-        // console.log(exits)
-        await redis_client.disconnect()
         // console.log(2)
-        // console.log(deletedTodo.rows[0])
+  
         res.status(200).send(deletedTodo.rows[0])
     }
     catch(e)
     {
-        res.status(404).send(e)
+        // console.log(e)
+        res.status(404).send({error : 'Not Found'})
     }
 })
 // delete with group name
-router.delete('/deleteByGroup', async (req, res) => {
+router.delete('/deleteByGroup', auth, async (req, res) => {
     try{
         // const id = req.params.id
         const group = req.body._group.trim().toLowerCase()
         const deletedTodo = await pool.query(
-            'DELETE FROM todo WHERE _group = ($1) RETURNING *',
-            [group]
+            `DELETE FROM todo WHERE _group = '${group}' AND user_id = ${req.body.user_id}  RETURNING *`
         )
-        if(deletedTodo.rows.length == 0) return res.status(200).send('already deleted')
-        await redis_client.connect()
+        if(deletedTodo.rows.length == 0) throw new Error('Not Found')
+        // await redis_client.connect()
         // console.log('CONNECTED :)')
-        let delStatus1 = await redis_client.del(`group:${group}`)
+        let delStatus1 = await redis_client.del(`u_id:${req.body.user_id}|group:${group}`)
 
         for(const todo of deletedTodo.rows)
         {
             const stat = await redis_client.del(`id:${todo.todo_id}`)
+            redis_client.sRem(`u_id:${req.body.user_id}`, JSON.stringify(todo))
         }
 
-        await redis_client.disconnect()
+        // await redis_client.disconnect()
         // console.log('DISCONNECTED')
         res.status(200).send(deletedTodo.rows)
     }
     catch(e)
     {
-        res.status(404).send(e)
+        res.status(404).send({error: 'Not Found'})
     }
 })
 
