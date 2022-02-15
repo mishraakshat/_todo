@@ -30,7 +30,7 @@ router.post('/todos', auth, async (req, res) => {
         const set_with_group = await redis_client.sAdd(`u_id:${req.body.user_id}|group:${newTodo.rows[0]._group}`, data)
         await redis_client.sAdd(`u_id:${req.body.user_id}`, data)
        
-        res.send(newTodo.rows[0])
+        res.status(201).send(newTodo.rows[0])
         
     } catch(e)
     {
@@ -50,7 +50,7 @@ router.get('/todos' , auth, async (req, res) => {
         if(offset) OFFSET = `OFFSET ${offset}`
         if(limit)  LIMIT  = `LIMIT ${limit}`
 
-        console.log(OFFSET,LIMIT)
+        // console.log(OFFSET,LIMIT)
         // const allTodos = await pool.query(
         //     `SELECT * FROM todo ${LIMIT} ${OFFSET}`
         //     )
@@ -71,17 +71,20 @@ router.get('/todos/:id' ,auth, async (req, res) => {
     try{
         const id = req.params.id.trim()
         // await redis_client.connect()
+        // console.log(id)
         const details = await redis_client.get(`id:${id}`)
+        // console.log()
         // await redis_client.disconnect()
         // console.log(details," data")
         const data = JSON.parse(details)
         if(data.user_id != req.body.user_id) throw new error('User trying to get data of another user')
 
-        res.status(201).send(data)
+        res.status(200).send(data)
        
     }
     catch(e)
     {
+        // console.log(e)
         res.status(404).send({error : 'Not Found'})
     }
 })
@@ -224,6 +227,7 @@ router.delete('/todos/:id', auth, async (req, res) => {
     }
     catch(e)
     {
+        // console.log(e)
         res.status(404).send({error : 'Not Found'})
     }
 })
